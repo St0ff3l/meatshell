@@ -81,8 +81,7 @@ pub fn log_dir() -> PathBuf {
 /// Pre-0.4.15 location: the per-user OS config dir
 /// (`%APPDATA%/meatshell`, `~/.config/meatshell`, …).
 fn legacy_data_dir() -> Option<PathBuf> {
-    ProjectDirs::from("dev", "meatshell", "meatshell")
-        .map(|d| d.config_dir().to_path_buf())
+    ProjectDirs::from("dev", "meatshell", "meatshell").map(|d| d.config_dir().to_path_buf())
 }
 
 /// Portable location: a `config/` folder beside the executable.
@@ -150,8 +149,7 @@ fn migrate_legacy(legacy: &Path, portable: &Path) {
                     #[cfg(unix)]
                     if name == "secret.key" {
                         use std::os::unix::fs::PermissionsExt;
-                        let _ =
-                            fs::set_permissions(&dst, fs::Permissions::from_mode(0o600));
+                        let _ = fs::set_permissions(&dst, fs::Permissions::from_mode(0o600));
                     }
                     tracing::info!(
                         "migrated {name} to portable config dir {}",
@@ -197,7 +195,11 @@ impl Drop for Secret {
 impl std::fmt::Debug for Secret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Never reveal the contents in logs / debug output.
-        f.write_str(if self.0.is_empty() { "Secret(\"\")" } else { "Secret(***)" })
+        f.write_str(if self.0.is_empty() {
+            "Secret(\"\")"
+        } else {
+            "Secret(***)"
+        })
     }
 }
 
@@ -588,6 +590,20 @@ pub struct ConfigFile {
     /// sessions (same path, falling back to each panel's current dir).
     #[serde(default)]
     pub sync_upload: bool,
+    /// WebDAV sync settings (#185). Password is encrypted at rest like session
+    /// passwords; remote_path is the JSON export object path under the endpoint.
+    #[serde(default)]
+    pub webdav_enabled: bool,
+    #[serde(default)]
+    pub webdav_url: String,
+    #[serde(default)]
+    pub webdav_username: String,
+    #[serde(default)]
+    pub webdav_password: Secret,
+    #[serde(default)]
+    pub webdav_remote_path: String,
+    #[serde(default)]
+    pub webdav_accept_invalid_certs: bool,
     /// Render the welcome page (session list) as a docked left sidebar instead of
     /// a "New tab" tab (v0.5). Persisted so the layout choice sticks.
     #[serde(default)]
@@ -681,7 +697,11 @@ impl ConfigStore {
             .map_err(|e| anyhow::anyhow!("password encrypt error: {e}"))?;
         let mut blob = nonce.to_vec();
         blob.extend_from_slice(&ciphertext);
-        Ok(format!("{}{}", Self::ENC_PREFIX, URL_SAFE_NO_PAD.encode(&blob)))
+        Ok(format!(
+            "{}{}",
+            Self::ENC_PREFIX,
+            URL_SAFE_NO_PAD.encode(&blob)
+        ))
     }
 
     /// Try to decrypt a value produced by [`Self::encrypt`].
@@ -729,9 +749,7 @@ impl ConfigStore {
         {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600))
-                .with_context(|| {
-                    format!("failed to set permissions on {}", key_path.display())
-                })?;
+                .with_context(|| format!("failed to set permissions on {}", key_path.display()))?;
         }
         tracing::info!("generated new encryption key at {}", key_path.display());
         Ok(key)
@@ -749,9 +767,8 @@ impl ConfigStore {
             .context("config path has no parent directory")?
             .to_path_buf();
 
-        fs::create_dir_all(&config_dir).with_context(|| {
-            format!("failed to create config dir {}", config_dir.display())
-        })?;
+        fs::create_dir_all(&config_dir)
+            .with_context(|| format!("failed to create config dir {}", config_dir.display()))?;
 
         let key = Self::load_or_create_key(&config_dir)?;
 
@@ -764,11 +781,12 @@ impl ConfigStore {
                     // Decrypt any encrypted passwords; leave legacy plaintext
                     // values untouched (they will be encrypted on next save).
                     for session in &mut cfg.sessions {
-                        if let Some(plain) =
-                            Self::try_decrypt(&key, session.password.as_str())
-                        {
+                        if let Some(plain) = Self::try_decrypt(&key, session.password.as_str()) {
                             session.password = Secret::new(plain);
                         }
+                    }
+                    if let Some(plain) = Self::try_decrypt(&key, cfg.webdav_password.as_str()) {
+                        cfg.webdav_password = Secret::new(plain);
                     }
                     // Clean up any duplicate history accumulated before #113,
                     // keeping the last (most recent) occurrence of each command.
@@ -817,12 +835,7 @@ impl ConfigStore {
     }
 
     pub fn upsert(&mut self, session: Session) {
-        if let Some(existing) = self
-            .cache
-            .sessions
-            .iter_mut()
-            .find(|s| s.id == session.id)
-        {
+        if let Some(existing) = self.cache.sessions.iter_mut().find(|s| s.id == session.id) {
             *existing = session;
         } else {
             self.cache.sessions.push(session);
@@ -1047,14 +1060,22 @@ impl ConfigStore {
     /// sensible edge when the stored string is empty.
     pub fn sidebar_height(&self) -> f32 {
         let h = self.cache.sidebar_height;
-        if h <= 0.0 { default_sidebar_height() } else { h }
+        if h <= 0.0 {
+            default_sidebar_height()
+        } else {
+            h
+        }
     }
     pub fn set_sidebar_height(&mut self, v: f32) {
         self.cache.sidebar_height = v;
     }
     pub fn sidebar_dock(&self) -> String {
         let d = self.cache.sidebar_dock.trim();
-        if d.is_empty() { "left".into() } else { d.to_string() }
+        if d.is_empty() {
+            "left".into()
+        } else {
+            d.to_string()
+        }
     }
     pub fn set_sidebar_dock(&mut self, v: String) {
         self.cache.sidebar_dock = v;
@@ -1073,14 +1094,22 @@ impl ConfigStore {
     }
     pub fn welcome_sidebar_width(&self) -> f32 {
         let w = self.cache.welcome_sidebar_width;
-        if w <= 0.0 { 240.0 } else { w }
+        if w <= 0.0 {
+            240.0
+        } else {
+            w
+        }
     }
     pub fn set_welcome_sidebar_width(&mut self, v: f32) {
         self.cache.welcome_sidebar_width = v;
     }
     pub fn welcome_sidebar_dock(&self) -> String {
         let d = self.cache.welcome_sidebar_dock.trim();
-        if d.is_empty() { "left".into() } else { d.to_string() }
+        if d.is_empty() {
+            "left".into()
+        } else {
+            d.to_string()
+        }
     }
     pub fn set_welcome_sidebar_dock(&mut self, v: String) {
         self.cache.welcome_sidebar_dock = v;
@@ -1101,34 +1130,54 @@ impl ConfigStore {
     pub fn wallpaper_overlay(&self) -> f32 {
         let a = self.cache.wallpaper_overlay;
         // Floor lowered 0.40 -> 0.30 so more see-through panels are reachable.
-        if a <= 0.0 { 0.86 } else { a.clamp(0.30, 1.0) }
+        if a <= 0.0 {
+            0.86
+        } else {
+            a.clamp(0.30, 1.0)
+        }
     }
     pub fn set_wallpaper_overlay(&mut self, v: f32) {
         self.cache.wallpaper_overlay = v.clamp(0.30, 1.0);
     }
     pub fn panel_font(&self) -> u32 {
-        if self.cache.panel_font == 0 { 100 } else { self.cache.panel_font }
+        if self.cache.panel_font == 0 {
+            100
+        } else {
+            self.cache.panel_font
+        }
     }
     pub fn set_panel_font(&mut self, percent: u32) {
         self.cache.panel_font = percent.clamp(80, 160);
     }
     pub fn sftp_panel_width(&self) -> f32 {
         let w = self.cache.sftp_panel_width;
-        if w <= 0.0 { default_sftp_width() } else { w }
+        if w <= 0.0 {
+            default_sftp_width()
+        } else {
+            w
+        }
     }
     pub fn set_sftp_panel_width(&mut self, v: f32) {
         self.cache.sftp_panel_width = v;
     }
     pub fn sftp_panel_height(&self) -> f32 {
         let h = self.cache.sftp_panel_height;
-        if h <= 0.0 { default_sftp_height() } else { h }
+        if h <= 0.0 {
+            default_sftp_height()
+        } else {
+            h
+        }
     }
     pub fn set_sftp_panel_height(&mut self, v: f32) {
         self.cache.sftp_panel_height = v;
     }
     pub fn sftp_dock(&self) -> String {
         let d = self.cache.sftp_dock.trim();
-        if d.is_empty() { "bottom".into() } else { d.to_string() }
+        if d.is_empty() {
+            "bottom".into()
+        } else {
+            d.to_string()
+        }
     }
     pub fn set_sftp_dock(&mut self, v: String) {
         self.cache.sftp_dock = v;
@@ -1159,6 +1208,55 @@ impl ConfigStore {
 
     pub fn set_sync_upload(&mut self, v: bool) {
         self.cache.sync_upload = v;
+    }
+
+    pub fn webdav_enabled(&self) -> bool {
+        self.cache.webdav_enabled
+    }
+
+    pub fn webdav_url(&self) -> &str {
+        &self.cache.webdav_url
+    }
+
+    pub fn webdav_username(&self) -> &str {
+        &self.cache.webdav_username
+    }
+
+    pub fn webdav_password(&self) -> &str {
+        self.cache.webdav_password.as_str()
+    }
+
+    pub fn webdav_remote_path(&self) -> &str {
+        if self.cache.webdav_remote_path.trim().is_empty() {
+            "meatshell-connections.json"
+        } else {
+            &self.cache.webdav_remote_path
+        }
+    }
+
+    pub fn webdav_accept_invalid_certs(&self) -> bool {
+        self.cache.webdav_accept_invalid_certs
+    }
+
+    pub fn set_webdav_settings(
+        &mut self,
+        enabled: bool,
+        url: String,
+        username: String,
+        password: String,
+        remote_path: String,
+        accept_invalid_certs: bool,
+    ) {
+        self.cache.webdav_enabled = enabled;
+        self.cache.webdav_url = url.trim().trim_end_matches('/').to_string();
+        self.cache.webdav_username = username.trim().to_string();
+        self.cache.webdav_password = Secret::new(password);
+        self.cache.webdav_remote_path = if remote_path.trim().is_empty() {
+            "meatshell-connections.json".to_string()
+        } else {
+            remote_path.trim().trim_start_matches('/').to_string()
+        };
+        self.cache.webdav_accept_invalid_certs = accept_invalid_certs;
     }
 
     /// Whether each download prompts for a save location (default false) (#87).
@@ -1231,11 +1329,16 @@ impl ConfigStore {
                 session.password = Secret::new(enc);
             }
         }
+        if !disk.webdav_password.is_empty()
+            && !disk.webdav_password.as_str().starts_with(Self::ENC_PREFIX)
+        {
+            let enc = Self::encrypt(&self.key, disk.webdav_password.as_str())?;
+            disk.webdav_password = Secret::new(enc);
+        }
         let raw = serde_json::to_string_pretty(&disk)?;
         // Write to a sibling temp file then rename — cheap atomicity.
         let tmp = self.path.with_extension("json.tmp");
-        fs::write(&tmp, &raw)
-            .with_context(|| format!("failed to write {}", tmp.display()))?;
+        fs::write(&tmp, &raw).with_context(|| format!("failed to write {}", tmp.display()))?;
         // Restrict to owner-only before publishing (#34): sessions.json holds
         // (encrypted) credentials, so it shouldn't be world-readable. Set 0600
         // on the temp file so the permission is already in place at rename.
@@ -1262,7 +1365,11 @@ impl ConfigStore {
             .map_err(|e| anyhow::anyhow!("export encrypt error: {e}"))?;
         let mut blob = nonce.to_vec();
         blob.extend_from_slice(&ciphertext);
-        Ok(format!("{}{}", Self::EXPORT_PREFIX, URL_SAFE_NO_PAD.encode(&blob)))
+        Ok(format!(
+            "{}{}",
+            Self::EXPORT_PREFIX,
+            URL_SAFE_NO_PAD.encode(&blob)
+        ))
     }
 
     /// Decrypt a value produced by [`Self::encrypt_export`]; `None` if it isn't one.
@@ -1282,7 +1389,7 @@ impl ConfigStore {
     /// Export all sessions to a portable JSON file. Passwords are re-encrypted
     /// with the built-in export key; everything else stays plaintext so the
     /// file is human-readable and editable. Returns the number of sessions.
-    pub fn export_to(&self, path: &Path) -> Result<usize> {
+    pub fn export_json(&self) -> Result<(String, usize)> {
         let mut out = ExportFile {
             meatshell_export: 1,
             sessions: self.cache.sessions.clone(),
@@ -1296,19 +1403,24 @@ impl ConfigStore {
             // `last_used` is machine-local noise — don't carry it across.
             s.last_used = None;
         }
-        let raw = serde_json::to_string_pretty(&out)?;
-        fs::write(path, raw).with_context(|| format!("failed to write {}", path.display()))?;
-        Ok(out.sessions.len())
+        Ok((serde_json::to_string_pretty(&out)?, out.sessions.len()))
     }
 
-    /// Import sessions from a file produced by [`Self::export_to`]. New sessions
+    /// Export all sessions to a portable JSON file. Passwords are re-encrypted
+    /// with the built-in export key; everything else stays plaintext so the
+    /// file is human-readable and editable. Returns the number of sessions.
+    pub fn export_to(&self, path: &Path) -> Result<usize> {
+        let (raw, count) = self.export_json()?;
+        fs::write(path, raw).with_context(|| format!("failed to write {}", path.display()))?;
+        Ok(count)
+    }
+
+    /// Import sessions from a string produced by [`Self::export_json`]. New sessions
     /// get fresh ids; duplicates (same host+user+port+kind) are skipped.
     /// Returns `(added, skipped)`. The store is saved if anything was added.
-    pub fn import_from(&mut self, path: &Path) -> Result<(usize, usize)> {
-        let raw = fs::read_to_string(path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        let file: ExportFile = serde_json::from_str(&raw)
-            .context("not a valid meatshell export file")?;
+    pub fn import_json(&mut self, raw: &str) -> Result<(usize, usize)> {
+        let file: ExportFile =
+            serde_json::from_str(&raw).context("not a valid meatshell export file")?;
 
         let mut added = 0usize;
         let mut skipped = 0usize;
@@ -1335,6 +1447,13 @@ impl ConfigStore {
             self.save()?;
         }
         Ok((added, skipped))
+    }
+
+    /// Import sessions from a file produced by [`Self::export_to`].
+    pub fn import_from(&mut self, path: &Path) -> Result<(usize, usize)> {
+        let raw = fs::read_to_string(path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        self.import_json(&raw)
     }
 }
 
@@ -1378,8 +1497,7 @@ mod tests {
             ..Session::new_empty()
         });
 
-        let export_path =
-            std::env::temp_dir().join(format!("ms-exp-{}.json", Uuid::new_v4()));
+        let export_path = std::env::temp_dir().join(format!("ms-exp-{}.json", Uuid::new_v4()));
         assert_eq!(a.export_to(&export_path).unwrap(), 1);
 
         // The file keeps host/user plaintext but the password is obfuscated.
