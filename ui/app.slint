@@ -640,6 +640,7 @@ export component AppWindow inherits Window {
     // Split pane `pane-id`, peeling `tab-id` into a new pane on `dir`
     // ("left"/"right"/"up"/"down").
     callback pane-split(int /* pane-id */, string /* tab-id */, string /* dir */);
+    callback pane-merge(int /* pane-id */);
     // Open another connection to the same session as `tab-id` (a new tab).
     callback tab-duplicate(string /* tab-id */);
     // Drag-to-split (v0.5): cursor moved / dropped while dragging `tab-id`, in
@@ -1167,6 +1168,7 @@ export component AppWindow inherits Window {
                     // this row so tabs don't slide underneath them (#122).
                     reserve-right: pane.reserve-right;
                     show-new-tab: !root.welcome-as-sidebar;
+                    can-merge-pane: root.panes.length > 1;
                     tabs: pane.tabs;
                     active-id: pane.active-id;
                     tab-selected(id) => { root.pane-tab-selected(pane.id, id); }
@@ -1174,6 +1176,7 @@ export component AppWindow inherits Window {
                     new-tab() => { root.pane-new-tab(pane.id); }
                     tab-reorder(from, dir) => { root.pane-tab-reorder(pane.id, from, dir); }
                     tab-split(id, dir) => { root.pane-split(pane.id, id, dir); }
+                    merge-pane() => { root.pane-merge(pane.id); }
                     tab-duplicate(id) => { root.tab-duplicate(id); }
                     tab-drag-move(id, ax, ay) => {
                         root.tab-drag-move(id,
@@ -2791,13 +2794,12 @@ export component AppWindow inherits Window {
                 HorizontalLayout {
                     alignment: end;
                     spacing: 8px;
-                    Button {
+                    GhostButton {
                         text: root.lang-en ? "Cancel" : "取消";
                         clicked => { root.confirm-close-open = false; }
                     }
-                    Button {
+                    PrimaryButton {
                         text: root.lang-en ? "Close" : "关闭";
-                        primary: true;
                         clicked => { root.confirm-close-yes(); }
                     }
                 }

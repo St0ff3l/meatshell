@@ -4865,11 +4865,11 @@ fn refresh_panes(
     }
 }
 
-/// Hit-test a drag point (pane-area coords) to a target pane + edge zone, plus
-/// the highlight rect the dropped tab's new pane would occupy. Zone is one of
-/// "left"/"right"/"up"/"down"/"center"; `None` when the point is outside every
-/// pane. The 30% edge bands trigger a split; the middle drops into the pane's
-/// tab group.
+/// Hit-test a drag point (pane-area coords) to a target pane + drop zone, plus
+/// the highlight rect the dropped tab would affect. Zone is one of
+/// "tabstrip"/"left"/"right"/"up"/"down"/"center"; `None` when the point is
+/// outside every pane. The 30% edge bands trigger a split; the tab strip and
+/// middle drop into the pane's tab group.
 fn drag_target(
     layout: &crate::panes::Layout,
     content: (f32, f32),
@@ -4883,10 +4883,10 @@ fn drag_target(
     let p = panes
         .iter()
         .find(|p| x >= p.x && x < p.x + p.w && y >= p.y && y < p.y + p.h)?;
-    // Still on the tab strip — that's reorder territory, no split/move highlight.
     let body_top = p.y + STRIP;
     if y < body_top {
-        return None;
+        let ix = x.clamp(p.x + 3.0, p.x + p.w - 3.0) - 3.0;
+        return Some((p.id, "tabstrip", (ix, p.y + 4.0, 6.0, STRIP - 8.0)));
     }
     let bw = p.w.max(1.0);
     let bh = (p.h - STRIP).max(1.0);
@@ -5233,6 +5233,33 @@ fn wire_tab_callbacks(
         );
     }
 
+    // Merge a split pane back into another pane. The source pane's tabs are
+    // appended to the first remaining pane, then the emptied source collapses.
+    {
+        let weak = window.as_weak();
+        let layout = layout.clone();
+        let content_size = content_size.clone();
+        let tabs_model = tabs_model.clone();
+        let panes_model = panes_model.clone();
+        let splitters_model = splitters_model.clone();
+        window.on_pane_merge(move |pane_id: i32| {
+            {
+                let mut lay = layout.borrow_mut();
+                lay.merge_leaf_into_other(pane_id as u64);
+            }
+            if let Some(w) = weak.upgrade() {
+                refresh_panes(
+                    &w,
+                    &layout.borrow(),
+                    content_size.get(),
+                    &tabs_model,
+                    &panes_model,
+                    &splitters_model,
+                );
+            }
+        });
+    }
+
     // Drag-to-split: while a tab is dragged over the pane area, highlight the
     // drop zone the cursor is in (an edge band → split, the middle → move).
     {
@@ -5256,7 +5283,8 @@ fn wire_tab_callbacks(
     }
 
     // Drop: split the target pane toward the dropped-on edge (peeling the tab
-    // into the new pane), or drop into another pane's tab group from the middle.
+    // into the new pane), or drop into another pane's tab group from the middle
+    // / tab strip (IDEA-style merge by dragging onto the tab row).
     {
         let weak = window.as_weak();
         let layout = layout.clone();
@@ -5282,6 +5310,11 @@ fn wire_tab_callbacks(
                     }
                     "down" => {
                         lay.split(pane, crate::panes::Dir::Vertical, &tab_id, false);
+                    }
+                    "tabstrip" => {
+                        if src != Some(pane) {
+                            lay.move_tab(&tab_id, pane);
+                        }
                     }
                     _ => {
                         if src != Some(pane) {
@@ -7653,6 +7686,7 @@ struct HistSpan {
     fg: vt100::Color,
     bg: vt100::Color,
     bold: bool,
+    inverse: bool,
     col: i32,
     cells: i32,
 }
@@ -7665,19 +7699,16 @@ const MAX_HISTORY: usize = 100_000;
 
 /// Build one screen row into `(plain_text, coloured_runs)`.  `plain` carries one
 /// char per cell (space for blanks) so a char index equals the grid column.
-/// Effective (contents, fg, bg, bold) for one grid cell, applying reverse-video.
+/// Raw (contents, fg, bg, bold, wide, inverse) for one grid cell.
 /// `contents` is always one display string (" " for a blank cell).
 fn cell_attrs(
     screen: &vt100::Screen,
     r: u16,
     c: u16,
-) -> (String, vt100::Color, vt100::Color, bool, bool) {
+) -> (String, vt100::Color, vt100::Color, bool, bool, bool) {
     match screen.cell(r, c) {
         Some(cell) => {
-            let (mut fg, mut bg) = (cell.fgcolor(), cell.bgcolor());
-            if cell.inverse() {
-                std::mem::swap(&mut fg, &mut bg);
-            }
+            let (fg, bg, inverse) = (cell.fgcolor(), cell.bgcolor(), cell.inverse());
             let s = cell.contents();
             // A CJK / wide glyph spans two cells; vt100 reports the 2nd as a
             // blank continuation. Emit nothing for it — the wide glyph already
@@ -7691,12 +7722,13 @@ fn cell_attrs(
             } else {
                 s
             };
-            (s, fg, bg, cell.bold(), cell.is_wide())
+            (s, fg, bg, cell.bold(), cell.is_wide(), inverse)
         }
         None => (
             " ".to_string(),
             vt100::Color::Default,
             vt100::Color::Default,
+            false,
             false,
             false,
         ),
@@ -7708,7 +7740,7 @@ fn build_row(screen: &vt100::Screen, r: u16, cols: u16) -> Line {
     let mut runs: Vec<HistSpan> = Vec::new();
     let mut c = 0u16;
     while c < cols {
-        let (s, fg, bg, bold, wide) = cell_attrs(screen, r, c);
+        let (s, fg, bg, bold, wide, inverse) = cell_attrs(screen, r, c);
         // A wide (CJK) glyph gets its OWN span occupying exactly its two grid
         // cells, so the UI can box + centre + clip it on the monospace grid.
         // Otherwise a run of CJK rendered with a proportional CJK font drifts off
@@ -7721,6 +7753,7 @@ fn build_row(screen: &vt100::Screen, r: u16, cols: u16) -> Line {
                 fg,
                 bg,
                 bold,
+                inverse,
                 col: c as i32,
                 cells: 2,
             });
@@ -7736,8 +7769,8 @@ fn build_row(screen: &vt100::Screen, r: u16, cols: u16) -> Line {
         plain.push_str(&s);
         c += 1;
         while c < cols {
-            let (cs, cfg, cbg, cbold, cwide) = cell_attrs(screen, r, c);
-            if cwide || cfg != fg || cbg != bg || cbold != bold {
+            let (cs, cfg, cbg, cbold, cwide, cinverse) = cell_attrs(screen, r, c);
+            if cwide || cfg != fg || cbg != bg || cbold != bold || cinverse != inverse {
                 break;
             }
             plain.push_str(&cs);
@@ -7748,7 +7781,8 @@ fn build_row(screen: &vt100::Screen, r: u16, cols: u16) -> Line {
         let is_blank = text.chars().all(|ch| ch == ' ');
         let bg_default = matches!(bg, vt100::Color::Default);
         // Skip runs that contribute nothing visible: blank text *and* default bg.
-        if is_blank && bg_default {
+        // Reverse-video default colours still paint a visible default-fg background.
+        if is_blank && bg_default && !inverse {
             continue;
         }
         runs.push(HistSpan {
@@ -7756,6 +7790,7 @@ fn build_row(screen: &vt100::Screen, r: u16, cols: u16) -> Line {
             fg, // raw vt100::Color — converted at render time with the live palette
             bg,
             bold,
+            inverse,
             col: start_col as i32,
             cells,
         });
@@ -8116,11 +8151,13 @@ impl TermBuffer {
                     last_content = r as i32;
                 }
                 for hs in runs {
+                    let (fg, bg) =
+                        vt_span_colors(hs.fg, hs.bg, hs.bold, hs.inverse, self.is_dark);
                     spans.push(TermSpan {
                         cjk: contains_cjk(&hs.text),
                         text: hs.text.into(),
-                        fg: vt_color_to_slint(hs.fg, hs.bold, self.is_dark),
-                        bg: vt_bg_to_slint(hs.bg, self.is_dark),
+                        fg,
+                        bg,
                         bold: hs.bold,
                         row: r as i32,
                         col: hs.col,
@@ -8172,10 +8209,12 @@ impl TermBuffer {
                 &live[idx - hist_len]
             };
             for hs in &line.1 {
+                let (fg, bg) =
+                    vt_span_colors(hs.fg, hs.bg, hs.bold, hs.inverse, self.is_dark);
                 spans.push(TermSpan {
                     text: hs.text.clone().into(),
-                    fg: vt_color_to_slint(hs.fg, hs.bold, self.is_dark),
-                    bg: vt_bg_to_slint(hs.bg, self.is_dark),
+                    fg,
+                    bg,
                     bold: hs.bold,
                     row: d as i32,
                     col: hs.col,
@@ -8318,6 +8357,53 @@ fn vt_color_to_slint(color: vt100::Color, bold: bool, is_dark: bool) -> slint::C
         }
     };
     slint::Color::from_rgb_u8(r, g, b)
+}
+
+fn vt_default_fg_rgb(is_dark: bool) -> (u8, u8, u8) {
+    if is_dark {
+        (0xd4, 0xd4, 0xd4)
+    } else {
+        (0x2d, 0x2d, 0x2f)
+    }
+}
+
+fn vt_default_bg_rgb(is_dark: bool) -> (u8, u8, u8) {
+    if is_dark {
+        (0x0e, 0x0f, 0x13)
+    } else {
+        (0xfa, 0xfa, 0xfa)
+    }
+}
+
+fn vt_span_colors(
+    fg: vt100::Color,
+    bg: vt100::Color,
+    bold: bool,
+    inverse: bool,
+    is_dark: bool,
+) -> (slint::Color, slint::Color) {
+    if !inverse {
+        return (
+            vt_color_to_slint(fg, bold, is_dark),
+            vt_bg_to_slint(bg, is_dark),
+        );
+    }
+
+    let fg_color = match bg {
+        vt100::Color::Default => {
+            let (r, g, b) = vt_default_bg_rgb(is_dark);
+            slint::Color::from_rgb_u8(r, g, b)
+        }
+        _ => vt_color_to_slint(bg, false, is_dark),
+    };
+    let bg_color = match fg {
+        vt100::Color::Default => {
+            let (r, g, b) = vt_default_fg_rgb(is_dark);
+            slint::Color::from_rgb_u8(r, g, b)
+        }
+        _ => vt_bg_to_slint(fg, is_dark),
+    };
+    (fg_color, bg_color)
 }
 
 /// In light mode, remap light true-colour foregrounds to dark so they are
@@ -8708,5 +8794,29 @@ mod selection_tests {
         assert_eq!(m2.len(), 1);
         assert_eq!(m2[0].col, 0);
         assert_eq!(m2[0].len, 4, "two wide glyphs span four grid cells");
+    }
+
+    #[test]
+    fn inverse_default_colours_paint_a_visible_background() {
+        let (fg, bg) = vt_span_colors(
+            vt100::Color::Default,
+            vt100::Color::Default,
+            false,
+            true,
+            true,
+        );
+        assert_eq!(fg.as_argb_encoded(), 0xff0e0f13);
+        assert_eq!(bg.as_argb_encoded(), 0xffd4d4d4);
+
+        let mut parser = vt100::Parser::new(3, 30, 0);
+        parser.process(b"abc \x1b[7m20260705\x1b[27m end");
+        let (_plain, runs) = build_row(parser.screen(), 0, 30);
+        let hit = runs
+            .iter()
+            .find(|span| span.text.contains("20260705"))
+            .expect("reverse-video search hit should be a separate span");
+        assert!(hit.inverse);
+        assert!(matches!(hit.fg, vt100::Color::Default));
+        assert!(matches!(hit.bg, vt100::Color::Default));
     }
 }
