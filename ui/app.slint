@@ -1198,9 +1198,10 @@ export component AppWindow inherits Window {
                 vertical-stretch: 1;
                 background: Theme.bg-root;
 
-                // Empty pane (welcome-as-sidebar mode, no session open yet): a
-                // centered hint pointing at the left session list.
-                if pane.tabs.length == 0 : Rectangle {
+                // Empty pane outside welcome-sidebar mode: keep a small hint for
+                // rare empty panes, but do not cover the wallpaper when the
+                // session list is already visible as a sidebar.
+                if pane.tabs.length == 0 && !root.welcome-as-sidebar : Rectangle {
                     width: parent.width;
                     height: parent.height;
                     Text {
