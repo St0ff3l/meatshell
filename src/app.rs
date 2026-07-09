@@ -3027,6 +3027,8 @@ fn wire_session_callbacks(
                     VecModel::<SftpTreeNode>::default(),
                 )),
                 sftp_selected_count: 0,
+                sftp_sort_key: "".into(),
+                sftp_sort_dir: 0,
                 sftp_collapsed: sftp_collapsed_default,
                 sftp_panel_height: sftp_h_default,
                 sftp_panel_width: sftp_w_default,
@@ -3421,6 +3423,74 @@ fn terminal_sftp_paths(w: &AppWindow) -> HashMap<String, String> {
         }
     }
     out
+}
+
+fn sorted_sftp_entries_from_model(
+    model: &ModelRc<SftpEntry>,
+    key: &str,
+    dir: i32,
+) -> ModelRc<SftpEntry> {
+    let Some(vec_model) = model.as_any().downcast_ref::<VecModel<SftpEntry>>() else {
+        return model.clone();
+    };
+    let mut entries = Vec::with_capacity(vec_model.row_count());
+    for i in 0..vec_model.row_count() {
+        if let Some(entry) = vec_model.row_data(i) {
+            entries.push(entry);
+        }
+    }
+    sort_sftp_entries(&mut entries, key, dir);
+    ModelRc::from(std::rc::Rc::new(VecModel::from(entries)))
+}
+
+fn sort_sftp_entries(entries: &mut [SftpEntry], key: &str, dir: i32) {
+    use std::cmp::Ordering;
+
+    let name_cmp = |a: &SftpEntry, b: &SftpEntry| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| a.name.cmp(&b.name))
+    };
+    let default_cmp = |a: &SftpEntry, b: &SftpEntry| match (a.is_dir, b.is_dir) {
+        (true, false) => Ordering::Less,
+        (false, true) => Ordering::Greater,
+        _ => name_cmp(a, b),
+    };
+
+    if dir == 0 || key.is_empty() {
+        entries.sort_by(default_cmp);
+        return;
+    }
+
+    entries.sort_by(|a, b| {
+        let group = match (a.is_dir, b.is_dir) {
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            _ => Ordering::Equal,
+        };
+        if group != Ordering::Equal {
+            return group;
+        }
+        let ord = match key {
+            "size" => a
+                .size_bytes
+                .partial_cmp(&b.size_bytes)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| default_cmp(a, b)),
+            "modified" => a
+                .modified_ts
+                .partial_cmp(&b.modified_ts)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| default_cmp(a, b)),
+            _ => name_cmp(a, b).then_with(|| default_cmp(a, b)),
+        };
+        if dir < 0 {
+            ord.reverse()
+        } else {
+            ord
+        }
+    });
 }
 
 /// Push a value into a fixed-length ring buffer (newest at the end).
@@ -4275,7 +4345,7 @@ fn apply_session_event_to_window(
             });
         }
         SessionEvent::SftpEntries { path, entries } => {
-            let slint_entries: Vec<SftpEntry> = entries
+            let mut slint_entries: Vec<SftpEntry> = entries
                 .iter()
                 .map(|e| SftpEntry {
                     name: e.name.clone().into(),
@@ -4286,11 +4356,21 @@ fn apply_session_event_to_window(
                     } else {
                         format_size(e.size).into()
                     },
+                    size_bytes: e.size as f32,
                     modified: format_mtime(e.modified).into(),
+                    modified_ts: e.modified as f32,
                     mode: (e.mode & 0o7777) as i32,
                     selected: false,
                 })
                 .collect();
+            let (sort_key, sort_dir) = (0..terminals.row_count())
+                .find_map(|i| {
+                    let row = terminals.row_data(i)?;
+                    (row.id.as_str() == tab_id)
+                        .then(|| (row.sftp_sort_key.to_string(), row.sftp_sort_dir))
+                })
+                .unwrap_or_default();
+            sort_sftp_entries(&mut slint_entries, &sort_key, sort_dir);
             let model = ModelRc::from(std::rc::Rc::new(VecModel::from(slint_entries)));
             update_terminal(&|t| {
                 t.sftp_path = path.clone().into();
@@ -5714,6 +5794,48 @@ fn wire_sftp_callbacks(window: &AppWindow, sftp_handles: SftpHandles, sftp_last_
                     h.delete(path.to_string());
                 }
             }
+        });
+    }
+
+    // SFTP file-list sorting (#248): click a header to cycle asc -> desc -> default.
+    {
+        let weak = window.as_weak();
+        window.on_sftp_sort_request(move |tab_id: SharedString, key: SharedString| {
+            let Some(w) = weak.upgrade() else { return };
+            let terminals = w.get_terminals();
+            let Some(tm) = terminals.as_any().downcast_ref::<VecModel<TerminalState>>() else {
+                return;
+            };
+            update_terminal_row(tm, tab_id.as_str(), |row| {
+                let key = key.to_string();
+                let next_dir = if row.sftp_sort_key.as_str() != key || row.sftp_sort_dir == 0 {
+                    1
+                } else if row.sftp_sort_dir > 0 {
+                    -1
+                } else {
+                    0
+                };
+                let next_key = if next_dir == 0 { String::new() } else { key };
+                row.sftp_entries =
+                    sorted_sftp_entries_from_model(&row.sftp_entries, &next_key, next_dir);
+                row.sftp_sort_key = next_key.into();
+                row.sftp_sort_dir = next_dir;
+            });
+        });
+    }
+    {
+        let weak = window.as_weak();
+        window.on_sftp_clear_sort(move |tab_id: SharedString| {
+            let Some(w) = weak.upgrade() else { return };
+            let terminals = w.get_terminals();
+            let Some(tm) = terminals.as_any().downcast_ref::<VecModel<TerminalState>>() else {
+                return;
+            };
+            update_terminal_row(tm, tab_id.as_str(), |row| {
+                row.sftp_entries = sorted_sftp_entries_from_model(&row.sftp_entries, "", 0);
+                row.sftp_sort_key = "".into();
+                row.sftp_sort_dir = 0;
+            });
         });
     }
 

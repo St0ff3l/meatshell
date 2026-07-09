@@ -11,7 +11,9 @@ export struct SftpEntry {
     full-path: string,
     is-dir: bool,
     size: string,
+    size-bytes: float,
     modified: string,
+    modified-ts: float,
     mode: int,        // POSIX permission bits, for the chmod dialog (#84)
     selected: bool,   // multi-select checkbox state (#100)
 }
@@ -60,6 +62,8 @@ export component SftpPanel inherits Rectangle {
     in property <[SftpTreeNode]> tree-nodes: [];
     in property <string> current-tab-id;
     in property <[TabInfo]> transfer-targets: [];
+    in property <string> sort-key: "";
+    in property <int> sort-dir: 0; // 0 default / 1 asc / -1 desc
     in property <bool> collapsed: false;   // when true only the toolbar shows
     in property <bool> show-tree: true;    // hide the directory tree when narrow (#dock)
     in property <bool> compact: false;     // side-docked + collapsed → render nothing but a clean strip (#dock)
@@ -102,6 +106,8 @@ export component SftpPanel inherits Rectangle {
     callback edit(string);          // open writable in the built-in editor
     callback open-external(string);     // open with the OS default app (#81)
     callback edit-external(string);     // open externally + watch/re-upload (#81)
+    callback sort-request(string /* name|size|modified */);
+    callback clear-sort();
     // Context-menu extensions (#69). The *-request callbacks open dialogs in
     // the app shell; copy-path goes straight to the system clipboard.
     callback rename-request(string /* path */, string /* current name */);
@@ -446,12 +452,51 @@ export component SftpPanel inherits Rectangle {
                         // Spacer matching the rows' checkbox so the header columns
                         // line up with the values below them (#dock).
                         Rectangle { width: 16px; }
-                        Text { text: @tr("Name"); color: Theme.text-muted; font-size: Theme.fs-xs;
-                               horizontal-stretch: 1; vertical-alignment: center; }
-                        if root.show-size-col : Text { text: @tr("Size"); color: Theme.text-muted; font-size: Theme.fs-xs;
-                               width: 72px; horizontal-alignment: right; vertical-alignment: center; }
-                        if root.show-modified-col : Text { text: @tr("Modified"); color: Theme.text-muted; font-size: Theme.fs-xs;
-                               width: 116px; horizontal-alignment: right; vertical-alignment: center; }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            header-name-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.sort-request("name"); }
+                            }
+                            Text {
+                                text: @tr("Name") + (root.sort-key == "name" ? (root.sort-dir > 0 ? " ↑" : " ↓") : "");
+                                color: root.sort-key == "name" ? Theme.accent : Theme.text-muted;
+                                font-size: Theme.fs-xs;
+                                width: parent.width;
+                                horizontal-alignment: left;
+                                vertical-alignment: center;
+                            }
+                        }
+                        if root.show-size-col : Rectangle {
+                            width: 72px;
+                            header-size-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.sort-request("size"); }
+                            }
+                            Text {
+                                text: @tr("Size") + (root.sort-key == "size" ? (root.sort-dir > 0 ? " ↑" : " ↓") : "");
+                                color: root.sort-key == "size" ? Theme.accent : Theme.text-muted;
+                                font-size: Theme.fs-xs;
+                                width: parent.width;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                            }
+                        }
+                        if root.show-modified-col : Rectangle {
+                            width: 116px;
+                            header-modified-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.sort-request("modified"); }
+                            }
+                            Text {
+                                text: @tr("Modified") + (root.sort-key == "modified" ? (root.sort-dir > 0 ? " ↑" : " ↓") : "");
+                                color: root.sort-key == "modified" ? Theme.accent : Theme.text-muted;
+                                font-size: Theme.fs-xs;
+                                width: parent.width;
+                                horizontal-alignment: right;
+                                vertical-alignment: center;
+                            }
+                        }
                     }
                 }
                 Rectangle { height: 1px; background: Theme.border-subtle; }
@@ -626,7 +671,7 @@ export component SftpPanel inherits Rectangle {
                         x: root.menu-x;
                         y: root.menu-y;
                         width: 148px;
-                        height: 13 * 27px + 8px;
+                        height: 14 * 27px + 8px;
                         Rectangle {
                             background: Theme.bg-panel;
                             border-radius: Theme.radius-sm;
@@ -700,6 +745,11 @@ export component SftpPanel inherits Rectangle {
                                 SftpMenuItem {
                                     label: @tr("Refresh");
                                     clicked => { root.refresh(root.current-path); }
+                                }
+                                SftpMenuItem {
+                                    label: @tr("Clear sort");
+                                    enabled: root.sort-dir != 0;
+                                    clicked => { root.clear-sort(); }
                                 }
                             }
                         }

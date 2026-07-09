@@ -485,3 +485,6 @@ msgstr "复制打开"
 
 msgid "Copied"
 msgstr "已复制"
+
+msgid "Clear sort"
+msgstr "清除排序"

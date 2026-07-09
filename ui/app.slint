@@ -67,6 +67,8 @@ export struct TerminalState {
     sftp-loading: bool,
     sftp-tree-nodes: [SftpTreeNode],
     sftp-selected-count: int,   // checked entries in the SFTP panel (#100)
+    sftp-sort-key: string,      // ""|"name"|"size"|"modified" (#248)
+    sftp-sort-dir: int,         // 0 default / 1 asc / -1 desc (#248)
     sftp-collapsed: bool,       // SFTP panel minimised — per session (#v0.5)
     sftp-panel-height: length,  // SFTP panel extent (bottom dock) — per session
     sftp-panel-width: length,   // SFTP panel extent (side dock) — per session
@@ -694,6 +696,8 @@ export component AppWindow inherits Window {
     callback sftp-edit(string /* tab-id */, string /* path */);
     callback sftp-open-external(string /* tab-id */, string /* path */);
     callback sftp-edit-external(string /* tab-id */, string /* path */);
+    callback sftp-sort-request(string /* tab-id */, string /* key */);
+    callback sftp-clear-sort(string /* tab-id */);
     // SFTP context-menu extensions (#69): rename / chmod / mkdir / touch share
     // one single-input prompt dialog; copy-path goes straight to the clipboard.
     in-out property <bool> sftp-prompt-open: false;
@@ -1283,6 +1287,8 @@ export component AppWindow inherits Window {
                     sftp-tree-nodes: term.sftp-tree-nodes;
                     sftp-transfer-targets: root.tabs;
                     sftp-selected-count: term.sftp-selected-count;
+                    sftp-sort-key: term.sftp-sort-key;
+                    sftp-sort-dir: term.sftp-sort-dir;
                     quick-commands: root.quick-commands;
                     command-history: root.command-history;
                     history-view: root.history-view;
@@ -1336,6 +1342,8 @@ export component AppWindow inherits Window {
                     sftp-edit(path) => { root.sftp-edit(term.id, path); }
                     sftp-open-external(path) => { root.sftp-open-external(term.id, path); }
                     sftp-edit-external(path) => { root.sftp-edit-external(term.id, path); }
+                    sftp-sort-request(key) => { root.sftp-sort-request(term.id, key); }
+                    sftp-clear-sort() => { root.sftp-clear-sort(term.id); }
                     // #69 context-menu extensions → shared prompt dialog.
                     sftp-rename-request(path, name) => {
                         root.sftp-prompt-kind = "rename";

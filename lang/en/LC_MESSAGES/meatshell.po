@@ -485,3 +485,6 @@ msgstr "Duplicate connection"
 
 msgid "Copied"
 msgstr "Copied"
+
+msgid "Clear sort"
+msgstr "Clear sort"
