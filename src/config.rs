@@ -398,6 +398,8 @@ fn default_flow() -> String {
 #[serde(rename_all = "lowercase")]
 pub enum AuthMethod {
     Password,
+    #[serde(rename = "keyboard-interactive")]
+    KeyboardInteractive,
     Key,
 }
 
@@ -405,12 +407,14 @@ impl AuthMethod {
     pub fn as_str(&self) -> &'static str {
         match self {
             AuthMethod::Password => "password",
+            AuthMethod::KeyboardInteractive => "keyboard-interactive",
             AuthMethod::Key => "key",
         }
     }
 
     pub fn from_str(s: &str) -> Self {
         match s {
+            "keyboard-interactive" | "keyboard" | "interactive" => AuthMethod::KeyboardInteractive,
             "key" => AuthMethod::Key,
             _ => AuthMethod::Password,
         }

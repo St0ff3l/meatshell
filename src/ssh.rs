@@ -609,8 +609,8 @@ pub(crate) enum AuthResult {
 }
 
 /// Authenticate an already-connected SSH handle using the session's method,
-/// prompting for missing credentials and falling back from `password` to
-/// `keyboard-interactive` on a fresh handle (#86). Shared by the shell, SFTP and
+/// prompting for missing credentials and supporting explicit / fallback
+/// `keyboard-interactive` auth (#86, #249). Shared by the shell, SFTP and
 /// jump-host paths. On the keyboard-interactive fallback it reconnects, updating
 /// both `handle` and `jump_handle` in place so the caller keeps the live tunnel.
 pub(crate) async fn authenticate_session(
@@ -652,6 +652,18 @@ pub(crate) async fn authenticate_session(
                 .context("keyboard-interactive auth failed")?;
             }
             ok
+        }
+        AuthMethod::KeyboardInteractive => {
+            keyboard_interactive_auth(
+                handle,
+                &user,
+                password.as_str(),
+                &session.id,
+                &session.host,
+                events,
+            )
+            .await
+            .context("keyboard-interactive auth failed")?
         }
         AuthMethod::Key => {
             // An encrypted private key needs its passphrase; we reuse the

@@ -463,6 +463,16 @@ async fn run_sftp(
             }
             ok
         }
+        AuthMethod::KeyboardInteractive => crate::ssh::keyboard_interactive_auth(
+            &mut handle,
+            &user,
+            password.as_str(),
+            &session.id,
+            &session.host,
+            &events,
+        )
+        .await
+        .context("sftp keyboard-interactive auth failed")?,
         AuthMethod::Key => {
             // An encrypted private key needs its passphrase; reuse the session's
             // password field for it (empty = unencrypted), exactly like the shell

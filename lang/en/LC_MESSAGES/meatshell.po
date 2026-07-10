@@ -105,6 +105,15 @@ msgstr "Password"
 msgid "Private key"
 msgstr "Private key"
 
+msgid "Keyboard-interactive"
+msgstr "Keyboard-interactive"
+
+msgid "Password / first answer"
+msgstr "Password / first answer"
+
+msgid "Server prompts are shown during login; MFA / OTP prompts will ask again."
+msgstr "Server prompts are shown during login; MFA / OTP prompts will ask again."
+
 msgid "Leave blank to keep the current password"
 msgstr "Leave blank to keep the current password"
 

@@ -543,6 +543,11 @@ export component SessionDialog inherits Rectangle {
                         clicked => { root.draft-auth = "password"; }
                     }
                     SegOption {
+                        label: @tr("Keyboard-interactive");
+                        active: root.draft-auth == "keyboard-interactive";
+                        clicked => { root.draft-auth = "keyboard-interactive"; }
+                    }
+                    SegOption {
                         label: @tr("Private key");
                         active: root.draft-auth == "key";
                         clicked => { root.draft-auth = "key"; }
@@ -550,13 +555,20 @@ export component SessionDialog inherits Rectangle {
                 }
             }
 
-            if root.draft-kind == "ssh" && root.draft-auth == "password" : LabeledInput {
+            if root.draft-kind == "ssh" && (root.draft-auth == "password" || root.draft-auth == "keyboard-interactive") : LabeledInput {
                 input-background: Theme.bg-elevated;
                 idle-border: Theme.border-strong;
-                label: @tr("Password");
+                label: root.draft-auth == "keyboard-interactive" ? @tr("Password / first answer") : @tr("Password");
                 placeholder: root.is-editing ? @tr("Leave blank to keep the current password") : "••••••••";
                 password: true;
                 value <=> root.draft-password;
+            }
+
+            if root.draft-kind == "ssh" && root.draft-auth == "keyboard-interactive" : Text {
+                text: @tr("Server prompts are shown during login; MFA / OTP prompts will ask again.");
+                color: Theme.text-muted;
+                font-size: Theme.fs-xs;
+                wrap: word-wrap;
             }
 
             if root.draft-kind == "ssh" && root.draft-auth == "key" : VerticalLayout {
