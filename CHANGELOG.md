@@ -7,6 +7,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ### 修复 / Fixed
 
+- **修复 Windows 10 无边框窗口点击坐标整体错位的问题 (#193)。** Windows 创建 Slint/winit 窗口前会禁用 undecorated shadow 兼容层，避免部分 Win10 环境把隐藏边框计入命中区域，导致渲染位置与鼠标点击位置产生垂直偏移。
+- **改善 Windows 高 DPI 缩放下字体发糊的问题 (#224)。** Windows 默认使用 Slint software 渲染器，避开 2K/4K 屏幕开启 125%/150% 等缩放时 OpenGL/FemtoVG 路径可能导致的 UI 与设置页文字偏糊问题；仍可通过 `SLINT_BACKEND` 手动切换渲染器。
+- **修复 SFTP 面板拖动后拖拽上传命中区域错误的问题 (#253)。** 文件拖拽上传的落点判断会跟随 SFTP 面板的左、右、上、下停靠位置，只在当前文件列表区域内触发上传，不再固定只识别默认底部文件区。
 - **支持显式选择键盘交互认证 (#249)。** SSH 会话新增“键盘交互”认证方式，可直接走 keyboard-interactive 登录；密码 / 首次应答会自动用于第一条普通提示，MFA / OTP 等额外提示继续弹窗询问，SFTP 连接也复用同一认证路径。
 - **修复 macOS 触控板无法滚动终端的问题 (#252)。** 终端滚动命中层显式铺满输出区域，并在 macOS 上增加 winit 级触控板滚轮兜底；触控板双指滚动会进入终端回滚/alt-screen 滚轮逻辑，不再只能拖动右侧滚动条。
 
@@ -14,6 +17,9 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ### Fixed
 
+- **Fix whole-window click offset on Windows 10 frameless windows (#193).** Windows now disables winit's undecorated-shadow compatibility layer before creating Slint/winit windows, preventing some Win10 environments from counting hidden frame space in hit testing and shifting clicks vertically away from rendered pixels.
+- **Improve blurry text on Windows high-DPI scaling (#224).** Windows now defaults to Slint's software renderer, avoiding the OpenGL/FemtoVG path that can make UI and settings text look soft on 2K/4K displays using 125%/150% scaling; `SLINT_BACKEND` can still override the renderer manually.
+- **Fix drag-and-drop upload hit testing after moving the SFTP panel (#253).** File-drop upload detection now follows the SFTP panel on the left, right, top, or bottom dock and only triggers inside the current file-list area instead of staying fixed to the default bottom panel.
 - **Support explicit keyboard-interactive authentication (#249).** SSH sessions can now choose keyboard-interactive directly; the saved password / first answer is used for the first regular prompt, MFA / OTP prompts still ask interactively, and SFTP reuses the same auth path.
 - **Fix terminal scrolling with the macOS trackpad (#252).** The terminal scroll hit layer now explicitly covers the output area, and macOS gets a winit-level trackpad wheel fallback; two-finger scrolling feeds the terminal scrollback/alt-screen wheel path instead of requiring the scrollbar thumb.
 

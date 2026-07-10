@@ -326,9 +326,9 @@ fn set_window_icon(window: &AppWindow) {
         .with_winit_window(|ww| ww.set_window_icon(Some(icon)));
 }
 
-/// On Windows 11, give the frameless window the native rounded corners (#166) and
-/// drop shadow (#162) it otherwise loses by drawing its own title bar. Harmless
-/// on Windows 10 (the corner attribute is ignored) and a no-op elsewhere.
+/// On Windows, keep the frameless Slint surface and the native hit-test surface
+/// aligned. Some Win10 systems expose winit's undecorated-shadow compatibility
+/// frame as a real non-client strip, which shifts hit testing (#193).
 #[cfg(windows)]
 fn apply_window_chrome(window: &slint::Window) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -337,13 +337,6 @@ fn apply_window_chrome(window: &slint::Window) {
         let RawWindowHandle::Win32(h) = handle.as_raw() else { return };
         let hwnd = h.hwnd.get();
 
-        #[repr(C)]
-        struct Margins {
-            left: i32,
-            right: i32,
-            top: i32,
-            bottom: i32,
-        }
         #[link(name = "dwmapi")]
         extern "system" {
             fn DwmSetWindowAttribute(
@@ -352,7 +345,6 @@ fn apply_window_chrome(window: &slint::Window) {
                 pv: *const core::ffi::c_void,
                 cb: u32,
             ) -> i32;
-            fn DwmExtendFrameIntoClientArea(hwnd: isize, margins: *const Margins) -> i32;
         }
         // DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWCP_ROUND = 2 (Windows 11+).
         const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
@@ -365,18 +357,8 @@ fn apply_window_chrome(window: &slint::Window) {
                 (&pref as *const u32).cast(),
                 4,
             );
-            // A borderless (WS_POPUP) window has no system shadow; extending the
-            // DWM frame by a hair brings it back. The margin renders as glass, but
-            // our opaque background paints over it — only the shadow shows.
-            let m = Margins {
-                left: 1,
-                right: 1,
-                top: 1,
-                bottom: 1,
-            };
-            let shadow_hr = DwmExtendFrameIntoClientArea(hwnd, &m);
             tracing::debug!(
-                "window chrome applied: hwnd={hwnd:#x} corner_hr={corner_hr:#x} shadow_hr={shadow_hr:#x}"
+                "window chrome applied: hwnd={hwnd:#x} corner_hr={corner_hr:#x}"
             );
         }
     });
@@ -384,6 +366,34 @@ fn apply_window_chrome(window: &slint::Window) {
 
 #[cfg(not(windows))]
 fn apply_window_chrome(_window: &slint::Window) {}
+
+#[cfg(windows)]
+fn setup_windows_platform() {
+    use i_slint_backend_winit::winit::platform::windows::WindowAttributesExtWindows;
+
+    let mut builder = i_slint_backend_winit::Backend::builder();
+    if let Ok(backend) = std::env::var("SLINT_BACKEND") {
+        if let Some(renderer) = backend.strip_prefix("winit-").filter(|s| !s.is_empty()) {
+            builder = builder.with_renderer_name(renderer.to_owned());
+        }
+    }
+    let backend = builder
+        .with_window_attributes_hook(|attrs| {
+            attrs
+                .with_transparent(false)
+                .with_undecorated_shadow(false)
+        })
+        .build();
+
+    match backend {
+        Ok(backend) => {
+            if slint::platform::set_platform(Box::new(backend)).is_err() {
+                tracing::warn!("Windows winit backend was already initialized");
+            }
+        }
+        Err(err) => tracing::warn!("failed to initialize Windows winit backend: {err}"),
+    }
+}
 
 fn clamp_window_size_to_monitor(
     window: &slint::Window,
@@ -500,6 +510,12 @@ fn setup_macos_platform() {
 }
 
 pub fn run() -> Result<()> {
+    // Windows frameless-window attributes must be fixed before the first Slint
+    // window is created; doing it afterwards leaves some Win10 machines with an
+    // invisible frame that shifts mouse hit testing (#193).
+    #[cfg(windows)]
+    setup_windows_platform();
+
     // Immersive native title bar on macOS (must precede the first window).
     #[cfg(target_os = "macos")]
     setup_macos_platform();
@@ -1697,8 +1713,8 @@ pub fn run() -> Result<()> {
         let mut focused = true;
         let mut minimized = false;
         let mut occluded = false;
-        // Apply the Win11 rounded-corner + shadow chrome once, on the first event
-        // (the HWND reliably exists by then, unlike a pre-run timer) (#162/#166).
+        // Apply the Win11 rounded-corner hint once, on the first event (the HWND
+        // reliably exists by then, unlike a pre-run timer) (#166).
         let mut chrome_done = false;
         window.window().on_winit_window_event(move |_w, event| {
             if !chrome_done {
@@ -2006,60 +2022,11 @@ fn terminal_wheel_hit(
     x: f32,
     y: f32,
 ) -> Option<TerminalWheelHit> {
-    let active = win.get_active_tab_id().to_string();
-    if active.is_empty() || active == "welcome" {
-        return None;
-    }
-
-    let size = win.window().size();
-    let scale = win.window().scale_factor().max(0.01) as f32;
-    let mut area_x = 0.0_f32;
-    let mut area_y = if win.get_custom_titlebar() {
-        38.0
-    } else if win.get_is_mac() {
-        28.0
-    } else {
-        0.0
-    };
-    let mut area_w = size.width as f32 / scale;
-    let mut area_h = size.height as f32 / scale - area_y;
-
-    if win.get_welcome_as_sidebar() {
-        let dock = win.get_welcome_sidebar_dock().to_string();
-        let sidebar_strip_outside = !win.get_welcome_collapsed()
-            && win.get_sidebar_collapsed()
-            && win.get_sidebar_dock().as_str() == dock.as_str();
-        let welcome_taken = (if win.get_welcome_collapsed() {
-            36.0
-        } else {
-            win.get_welcome_sidebar_width()
-        }) + if sidebar_strip_outside { 36.0 } else { 0.0 };
-        shrink_edge(&mut area_x, &mut area_y, &mut area_w, &mut area_h, &dock, welcome_taken);
-    }
-
-    let side_dock = win.get_sidebar_dock().to_string();
-    let side_take = if win.get_sidebar_collapsed() {
-        36.0
-    } else if side_dock == "left" || side_dock == "right" {
-        win.get_sidebar_width() + 4.0
-    } else {
-        win.get_sidebar_height() + 4.0
-    };
-    shrink_edge(&mut area_x, &mut area_y, &mut area_w, &mut area_h, &side_dock, side_take);
-
-    let panes = win.get_panes();
-    let pane = (0..panes.row_count())
-        .filter_map(|i| panes.row_data(i))
-        .find(|p| p.active_id.as_str() == active.as_str())?;
-    let mut term_x = area_x + pane.x;
-    let mut term_y = area_y + pane.y + 40.0; // tab strip
-    let mut term_w = pane.w;
-    let mut term_h = (pane.h - 40.0).max(0.0);
-
-    let terms = win.get_terminals();
-    let term_state = (0..terms.row_count())
-        .filter_map(|i| terms.row_data(i))
-        .find(|t| t.id.as_str() == active.as_str())?;
+    let (active, term, term_state) = active_terminal_panel_rects(win)?;
+    let mut term_x = term.x;
+    let mut term_y = term.y;
+    let mut term_w = term.w;
+    let mut term_h = term.h;
 
     // TerminalView starts with a 24px status line, then the SFTP dock-region.
     term_y += 24.0;
@@ -2078,7 +2045,16 @@ fn terminal_wheel_hit(
     // Leave the command bar to TextInput/history handling; wheel fallback is for
     // terminal output only.
     term_h = (term_h - 34.0).max(0.0);
-    if x < term_x || y < term_y || x > term_x + term_w || y > term_y + term_h {
+    if !contains_logical(
+        LogicalRect {
+            x: term_x,
+            y: term_y,
+            w: term_w,
+            h: term_h,
+        },
+        x,
+        y,
+    ) {
         return None;
     }
 
@@ -2113,6 +2089,150 @@ fn shrink_edge(x: &mut f32, y: &mut f32, w: &mut f32, h: &mut f32, dock: &str, a
     }
 }
 
+#[derive(Clone, Copy)]
+struct LogicalRect {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+}
+
+fn contains_logical(rect: LogicalRect, x: f32, y: f32) -> bool {
+    x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h
+}
+
+fn app_content_area(win: &AppWindow) -> LogicalRect {
+    let size = win.window().size();
+    let scale = win.window().scale_factor().max(0.01) as f32;
+    let mut area = LogicalRect {
+        x: 0.0,
+        y: if win.get_custom_titlebar() {
+            38.0
+        } else if win.get_is_mac() {
+            28.0
+        } else {
+            0.0
+        },
+        w: size.width as f32 / scale,
+        h: 0.0,
+    };
+    area.h = size.height as f32 / scale - area.y;
+
+    if win.get_welcome_as_sidebar() {
+        let dock = win.get_welcome_sidebar_dock().to_string();
+        let sidebar_strip_outside = !win.get_welcome_collapsed()
+            && win.get_sidebar_collapsed()
+            && win.get_sidebar_dock().as_str() == dock.as_str();
+        let welcome_taken = (if win.get_welcome_collapsed() {
+            36.0
+        } else {
+            win.get_welcome_sidebar_width()
+        }) + if sidebar_strip_outside { 36.0 } else { 0.0 };
+        shrink_edge(
+            &mut area.x,
+            &mut area.y,
+            &mut area.w,
+            &mut area.h,
+            &dock,
+            welcome_taken,
+        );
+    }
+
+    let side_dock = win.get_sidebar_dock().to_string();
+    let side_take = if win.get_sidebar_collapsed() {
+        36.0
+    } else if side_dock == "left" || side_dock == "right" {
+        win.get_sidebar_width() + 4.0
+    } else {
+        win.get_sidebar_height() + 4.0
+    };
+    shrink_edge(
+        &mut area.x,
+        &mut area.y,
+        &mut area.w,
+        &mut area.h,
+        &side_dock,
+        side_take,
+    );
+    area
+}
+
+fn active_terminal_panel_rects(win: &AppWindow) -> Option<(String, LogicalRect, TerminalState)> {
+    let active = win.get_active_tab_id().to_string();
+    if active.is_empty() || active == "welcome" {
+        return None;
+    }
+
+    let area = app_content_area(win);
+    let panes = win.get_panes();
+    let pane = (0..panes.row_count())
+        .filter_map(|i| panes.row_data(i))
+        .find(|p| p.active_id.as_str() == active.as_str())?;
+
+    let terms = win.get_terminals();
+    let term_state = (0..terms.row_count())
+        .filter_map(|i| terms.row_data(i))
+        .find(|t| t.id.as_str() == active.as_str())?;
+
+    Some((
+        active,
+        LogicalRect {
+            x: area.x + pane.x,
+            y: area.y + pane.y + 40.0,
+            w: pane.w,
+            h: (pane.h - 40.0).max(0.0),
+        },
+        term_state,
+    ))
+}
+
+fn active_sftp_file_list_rect(win: &AppWindow) -> Option<LogicalRect> {
+    let (_active, term, term_state) = active_terminal_panel_rects(win)?;
+    if term_state.sftp_collapsed {
+        return None;
+    }
+
+    // TerminalView starts with a 24px connection-status line; SFTP docks inside
+    // the remaining dock-region. This mirrors ui/terminal_view.slint.
+    let dock_region = LogicalRect {
+        x: term.x,
+        y: term.y + 24.0,
+        w: term.w,
+        h: (term.h - 24.0).max(0.0),
+    };
+    let dock = win.get_sftp_dock().to_string();
+    let mut panel = LogicalRect {
+        x: dock_region.x,
+        y: dock_region.y,
+        w: if dock == "left" || dock == "right" {
+            term_state.sftp_panel_width
+        } else {
+            dock_region.w
+        },
+        h: if dock == "left" || dock == "right" {
+            dock_region.h
+        } else {
+            term_state.sftp_panel_height
+        },
+    };
+    if dock == "right" {
+        panel.x = dock_region.x + (dock_region.w - panel.w).max(0.0);
+    } else if dock == "bottom" {
+        panel.y = dock_region.y + (dock_region.h - panel.h).max(0.0);
+    }
+
+    // SftpPanel layout: toolbar 34, then file headers 20 + separator 1; when the
+    // tree is shown (top/bottom docks), the file list starts after tree 160 + sep.
+    let show_tree = dock != "left" && dock != "right";
+    panel.y += 34.0 + 20.0 + 1.0;
+    panel.h = (panel.h - 34.0 - 20.0 - 1.0).max(0.0);
+    if show_tree {
+        panel.x += 160.0 + 1.0;
+        panel.w = (panel.w - 160.0 - 1.0).max(0.0);
+    }
+    Some(panel)
+}
+
 /// Current mouse cursor position in physical screen pixels (Windows).
 #[cfg(windows)]
 fn cursor_pos() -> Option<(i32, i32)> {
@@ -2142,7 +2262,6 @@ fn handle_file_drop(win: &AppWindow, sftp_handles: &SftpHandles, path: std::path
     }
     let w = win.window();
     let scale = w.scale_factor().max(0.01);
-    let size = w.size(); // physical
     let Some(inner) = w.with_winit_window(|ww| ww.inner_position().ok()).flatten() else {
         return;
     };
@@ -2152,17 +2271,10 @@ fn handle_file_drop(win: &AppWindow, sftp_handles: &SftpHandles, path: std::path
     // Drop point in logical client coordinates.
     let client_x = (cx - inner.x) as f32 / scale;
     let client_y = (cy - inner.y) as f32 / scale;
-    let w_logical = size.width as f32 / scale;
-    let h_logical = size.height as f32 / scale;
-    let h_sftp = win.get_sftp_panel_height();
-
-    // File-list box (logical): right of the sidebar(220)+tree(160)+sep(1),
-    // below the SFTP toolbar(30)+header(20)+sep(1), above the status bar(18).
-    let zone_left = 381.0_f32;
-    let zone_top = h_logical - h_sftp + 51.0;
-    let zone_bottom = h_logical - 18.0;
-    if client_x < zone_left || client_x > w_logical || client_y < zone_top || client_y > zone_bottom
-    {
+    let Some(file_list) = active_sftp_file_list_rect(win) else {
+        return;
+    };
+    if !contains_logical(file_list, client_x, client_y) {
         return; // dropped outside the file list — ignore
     }
 
