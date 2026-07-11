@@ -5,11 +5,19 @@ All notable changes are documented here. 本文件记录所有重要变更。
 
 ## [Unreleased]
 
+### 新增 / Added
+
+- **新增运行时 SSH 隧道面板 (#206)。** SFTP 底部面板新增“文件 / 隧道”切换，已连接 SSH 会话可在运行中新增和停止本地转发 `-L` 与 SOCKS 动态转发 `-D`，现有会话配置不会被自动改写。
+
 ### 修复 / Fixed
 
 - **移除点击标签页时复制标签名称的旧行为。** 点击标签页现在只负责切换会话，多窗口/分屏标签交互不再污染剪贴板。
 
 ---
+
+### Added
+
+- **Add a runtime SSH tunnel panel (#206).** The SFTP bottom panel now has Files / Tunnels tabs, allowing connected SSH sessions to add and stop local `-L` forwards and SOCKS dynamic `-D` forwards at runtime without modifying the saved session configuration.
 
 ### Fixed
 

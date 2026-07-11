@@ -22,14 +22,14 @@ import { SessionDialog, SessionDraft, PortFwd } from "session_dialog.slint";
 import { ConfirmDialog } from "confirm_dialog.slint";
 import { LabeledInput, PrimaryButton, GhostButton, DockExpandButton, IconButton, ToolStrip } from "widgets.slint";
 import { TerminalView, TermSpan, TermMatch, QuickCmd } from "terminal_view.slint";
-import { SftpEntry, SftpTreeNode } from "sftp_panel.slint";
+import { SftpEntry, SftpTreeNode, TunnelInfo } from "sftp_panel.slint";
 import { ProcWindow, ProcRow } from "proc_window.slint";
 import { InterfacePanel } from "interface_panel.slint";
 // Re-export so `slint::include_modules!` generates the ProcWindow Rust type.
 export { ProcWindow }
 import { ComboBox, SpinBox, LineEdit, Button, ScrollView, CheckBox, Palette } from "std-widgets.slint";
 
-export { SessionInfo, SessionDraft, TabInfo, SftpEntry, SftpTreeNode, QuickCmd, PortFwd }
+export { SessionInfo, SessionDraft, TabInfo, SftpEntry, SftpTreeNode, TunnelInfo, QuickCmd, PortFwd }
 
 // --- TerminalState ---------------------------------------------------------
 // Per-terminal view-model exposed to Rust. A TabInfo has the metadata; the
@@ -69,6 +69,7 @@ export struct TerminalState {
     sftp-selected-count: int,   // checked entries in the SFTP panel (#100)
     sftp-sort-key: string,      // ""|"name"|"size"|"modified" (#248)
     sftp-sort-dir: int,         // 0 default / 1 asc / -1 desc (#248)
+    tunnels: [TunnelInfo],      // runtime SSH tunnels (#206)
     sftp-collapsed: bool,       // SFTP panel minimised — per session (#v0.5)
     sftp-panel-height: length,  // SFTP panel extent (bottom dock) — per session
     sftp-panel-width: length,   // SFTP panel extent (side dock) — per session
@@ -696,6 +697,8 @@ export component AppWindow inherits Window {
     callback sftp-edit-external(string /* tab-id */, string /* path */);
     callback sftp-sort-request(string /* tab-id */, string /* key */);
     callback sftp-clear-sort(string /* tab-id */);
+    callback tunnel-add(string /* tab-id */, string /* name */, string /* kind */, string /* bind */, string /* bind-port */, string /* host */, string /* host-port */);
+    callback tunnel-stop(string /* tab-id */, string /* tunnel-id */);
     // SFTP context-menu extensions (#69): rename / chmod / mkdir / touch share
     // one single-input prompt dialog; copy-path goes straight to the clipboard.
     in-out property <bool> sftp-prompt-open: false;
@@ -1291,6 +1294,7 @@ export component AppWindow inherits Window {
                     sftp-selected-count: term.sftp-selected-count;
                     sftp-sort-key: term.sftp-sort-key;
                     sftp-sort-dir: term.sftp-sort-dir;
+                    tunnels: term.tunnels;
                     quick-commands: root.quick-commands;
                     command-history: root.command-history;
                     history-view: root.history-view;
@@ -1346,6 +1350,10 @@ export component AppWindow inherits Window {
                     sftp-edit-external(path) => { root.sftp-edit-external(term.id, path); }
                     sftp-sort-request(key) => { root.sftp-sort-request(term.id, key); }
                     sftp-clear-sort() => { root.sftp-clear-sort(term.id); }
+                    tunnel-add(name, kind, bind, bind-port, host, host-port) => {
+                        root.tunnel-add(term.id, name, kind, bind, bind-port, host, host-port);
+                    }
+                    tunnel-stop(id) => { root.tunnel-stop(term.id, id); }
                     // #69 context-menu extensions → shared prompt dialog.
                     sftp-rename-request(path, name) => {
                         root.sftp-prompt-kind = "rename";

@@ -3317,6 +3317,7 @@ fn wire_session_callbacks(
                 sftp_selected_count: 0,
                 sftp_sort_key: "".into(),
                 sftp_sort_dir: 0,
+                tunnels: ModelRc::from(std::rc::Rc::new(VecModel::<TunnelInfo>::default())),
                 sftp_collapsed: sftp_collapsed_default,
                 sftp_panel_height: sftp_h_default,
                 sftp_panel_width: sftp_w_default,
@@ -4671,6 +4672,29 @@ fn apply_session_event_to_window(
             if win.get_active_tab_id().as_str() == tab_id {
                 refresh_sidebar(win, statuses, local, local_net_hist);
             }
+        }
+        SessionEvent::TunnelUpdate(rows) => {
+            let items = rows
+                .into_iter()
+                .map(|r| TunnelInfo {
+                    id: r.id.into(),
+                    name: r.name.into(),
+                    kind: r.kind.clone().into(),
+                    bind: format!("{}:{}", r.bind_addr, r.bind_port).into(),
+                    target: if r.kind == "dynamic" {
+                        "SOCKS5".into()
+                    } else if r.host.is_empty() || r.host_port == 0 {
+                        "".into()
+                    } else {
+                        format!("{}:{}", r.host, r.host_port).into()
+                    },
+                    status: r.status.into(),
+                    active: r.active,
+                })
+                .collect::<Vec<_>>();
+            update_terminal(&|t| {
+                t.tunnels = ModelRc::from(std::rc::Rc::new(VecModel::from(items.clone())));
+            });
         }
 
         // --- SFTP events ---------------------------------------------------
@@ -6576,6 +6600,56 @@ fn wire_key_input(
     store: Rc<RefCell<ConfigStore>>,
     ctx: ConnectCtx,
 ) {
+    // Runtime SSH tunnel panel (#206). These tunnels live only for the active
+    // connection; saved session configuration remains unchanged.
+    {
+        let handles_rc = handles.clone();
+        window.on_tunnel_add(
+            move |tab_id: SharedString,
+                  name: SharedString,
+                  kind: SharedString,
+                  bind: SharedString,
+                  bind_port: SharedString,
+                  host: SharedString,
+                  host_port: SharedString| {
+                let kind = kind.to_string();
+                if kind != "local" && kind != "dynamic" {
+                    return;
+                }
+                let Ok(bind_port) = bind_port.trim().parse::<u16>() else {
+                    return;
+                };
+                let host_port = if kind == "dynamic" {
+                    0
+                } else {
+                    match host_port.trim().parse::<u16>() {
+                        Ok(p) => p,
+                        Err(_) => return,
+                    }
+                };
+                let forward = crate::config::PortForward {
+                    kind,
+                    name: name.trim().to_string(),
+                    bind_addr: bind.trim().to_string(),
+                    bind_port,
+                    host: host.trim().to_string(),
+                    host_port,
+                };
+                if let Some(handle) = handles_rc.borrow().get(tab_id.as_str()) {
+                    handle.add_tunnel(format!("runtime-{}", uuid::Uuid::new_v4()), forward);
+                }
+            },
+        );
+    }
+    {
+        let handles_rc = handles.clone();
+        window.on_tunnel_stop(move |tab_id: SharedString, tunnel_id: SharedString| {
+            if let Some(handle) = handles_rc.borrow().get(tab_id.as_str()) {
+                handle.stop_tunnel(tunnel_id.to_string());
+            }
+        });
+    }
+
     // --- Command bar (#55): run command + quick-command management ---------
     {
         let handles_rc = handles.clone();
