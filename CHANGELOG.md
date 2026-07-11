@@ -3,7 +3,7 @@
 All notable changes are documented here. 本文件记录所有重要变更。
 中英对照（中文在前，English after）.
 
-## [Unreleased]
+## [0.6.1] - 2026-07-11
 
 ### 新增 / Added
 
